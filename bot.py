@@ -65,28 +65,20 @@ def get_admin_keyboard(is_owner=False):
 async def turn_timer_logic(admin_id, player_id, context):
     game = database[admin_id].get("game")
     channel_id = database[admin_id].get("channel_id")
-    time_left = 60 # تم التعديل إلى 60 ثانية حسب طلبك
     
-    timer_msg = await safe_send(context, chat_id=channel_id, text=f"⏳ متبقي من الوقت: {time_left} ثانية")
-    if timer_msg:
-        game["timer_msg_id"] = timer_msg.message_id
+    # التعديل الجديد: إرسال رسالة البداية مرة واحدة فقط بدون أي تعديل لاحق لتجنب القيود
+    await safe_send(context, chat_id=channel_id, text="⏳ حان وقت التنفيذ! لديك 60 ثانية لإنجاز المهمة وإلا سيتم إقصاؤك.")
 
-    while time_left > 0:
-        await asyncio.sleep(10)
-        time_left -= 10
-        
+    # ننتظر 60 ثانية (مقسمة لثانية واحدة لمراقبة إذا أنهى اللاعب المهمة مبكراً)
+    for _ in range(60):
+        await asyncio.sleep(1)
+        # إذا اللعبة توقفت أو اللاعب أنهى مهمته وتغير الدور، نخرج بصمت
         if not game or not game.get("is_game_started") or game.get("current_turn") != player_id:
-            break
-            
-        if game.get("timer_msg_id"):
-            await safe_edit(context, chat_id=channel_id, message_id=game["timer_msg_id"], text=f"⏳ متبقي من الوقت: {time_left} ثانية")
+            return 
     
-    # منطقة الصفر
-    if time_left <= 0 and game and game.get("current_turn") == player_id:
+    # منطقة الصفر (انتهت الـ 60 ثانية ولم يُنهِ اللاعب المطلوب)
+    if game and game.get("current_turn") == player_id:
         game["current_turn"] = None
-        
-        if game.get("timer_msg_id"):
-            await safe_edit(context, chat_id=channel_id, message_id=game["timer_msg_id"], text="⏳ متبقي من الوقت: 0 ثانية")
 
         player_name = "لاعب"
         if player_id in game["players"]:
@@ -190,7 +182,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for aid, data in database.items():
         if isinstance(aid, (int, str)) and data.get("game"):
             if user_id in data["game"]["waiting_for_name"]:
-                # --- فحص طول الاسم 40 حرف ---
                 if len(text) > 40:
                     await update.message.reply_text("⚠️ عذراً، الاسم طويل جداً! (أقصى حد هو 40 حرف).\nرجاءً أرسل اسماً أقصر لتدخل الساحة:")
                     return
@@ -203,7 +194,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 count = len(data["game"]["players"])
                 channel_chat = database[aid].get("channel_id")
                 msg_id = data["game"].get("counter_msg_id")
-                if channel_chat and msg_id:
+                
+                # التعديل الجديد: تحديث العداد كل 5 لاعبين فقط لتخفيف الضغط على البوت وتجنب حظر تليجرام
+                if channel_chat and msg_id and count % 5 == 0:
                     await safe_edit(context, chat_id=channel_chat, message_id=msg_id, text=f"👥 عدد المشتركين الحالي: {count}")
                 return
 
@@ -308,7 +301,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- الإضافة الجماعية للمشرفين ---
     if is_owner and context.user_data.get("action") == "add_admin":
-        usernames = re.split(r'[\s,\n]+', text.strip()) # تفكيك الرسالة حسب المسافات أو الأسطر
+        usernames = re.split(r'[\s,\n]+', text.strip()) 
         added_list = []
         for u in usernames:
             if not u: continue
@@ -439,7 +432,14 @@ async def start_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
     current_username = f"@{u_name.lower()}" if u_name else None
     
     if c.args and c.args[0].startswith("reg"):
-        aid = channel_to_admin.get(int(c.args[0][3:]))
+        # التعديل الإضافي: حماية ضد ثغرة "الرابط القاتل" حتى لا يتوقف البوت أبداً
+        try:
+            channel_id_part = int(c.args[0][3:])
+            aid = channel_to_admin.get(channel_id_part)
+        except (ValueError, TypeError):
+            await u.message.reply_text("⚠️ عذراً، هذا الرابط غير صالح.")
+            return
+
         if aid and database[aid].get("game") and database[aid]["game"].get("is_registration_open"):
             if uid in database[aid]["game"]["players"] or uid in database[aid]["game"]["waiting_for_name"]:
                 await u.message.reply_text("⚠️ مهلاً! لا يمكنك دخول نفس اللعبة مرتين."); return
