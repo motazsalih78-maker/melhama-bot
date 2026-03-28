@@ -20,7 +20,8 @@ def get_empty_game():
         "is_game_started": False, "current_turn": None, 
         "turn_timer_task": None, "required_eliminations": 0, "current_eliminations": 0,
         "timer_msg_id": None, 
-        "counter_msg_id": None 
+        "counter_msg_id": None,
+        "waiting_for_roulette": False # قفل الروليت لمنع التكرار
     }
 
 # --- 2. نظام الإلحاح التصاعدي (تم التحديث لـ 4 محاولات ووقت تصاعدي) ---
@@ -66,18 +67,21 @@ async def turn_timer_logic(admin_id, player_id, context):
     game = database[admin_id].get("game")
     channel_id = database[admin_id].get("channel_id")
     
-    # التعديل الجديد: إرسال رسالة البداية مرة واحدة فقط بدون أي تعديل لاحق لتجنب القيود
     await safe_send(context, chat_id=channel_id, text="⏳ حان وقت التنفيذ! لديك 60 ثانية لإنجاز المهمة وإلا سيتم إقصاؤك.")
 
-    # ننتظر 60 ثانية (مقسمة لثانية واحدة لمراقبة إذا أنهى اللاعب المهمة مبكراً)
     for _ in range(60):
         await asyncio.sleep(1)
-        # إذا اللعبة توقفت أو اللاعب أنهى مهمته وتغير الدور، نخرج بصمت
         if not game or not game.get("is_game_started") or game.get("current_turn") != player_id:
             return 
     
-    # منطقة الصفر (انتهت الـ 60 ثانية ولم يُنهِ اللاعب المطلوب)
+    # منطقة الصفر (انتهت الـ 60 ثانية)
     if game and game.get("current_turn") == player_id:
+        
+        # --- التعديل: الأولوية لعمل اللاعب في آخر جزء من الثانية ---
+        if game.get("current_eliminations", 0) >= game.get("required_eliminations", 1):
+            return # اللاعب أتم المهمة في الوقت الضائع، يتم إلغاء الطرد!
+        # -------------------------------------------------------------
+
         game["current_turn"] = None
 
         player_name = "لاعب"
@@ -88,7 +92,7 @@ async def turn_timer_logic(admin_id, player_id, context):
 
         await safe_send(context, chat_id=player_id, text="⏰ انتهى الوقت المسموح لك! لقد تم إقصاؤك من الساحة لعدم إنجاز المهمة.\n\n💡 اطلب من الادمن بدء اللعبة من جديد او انتظر حتى ينتهي الدور والمشاركة فالرابط مرة اخرى.")
             
-        await safe_send(context, chat_id=channel_id, text=f"⌛ نفد الوقت! تم إقصاء صاحب الدور ✨ {player_name} ✨ لعدم إنجازه المهمة.")
+        await safe_send(context, chat_id=channel_id, text=f"⌛ نفد الوقت! تم إقصاء صاحب الدور ⭐️ {player_name} ⭐️ لعدم إنجازه المهمة.")
 
         is_winner = await check_winner(admin_id, context)
         if not is_winner:
@@ -140,7 +144,7 @@ async def start_turn(admin_id, context):
     player_name = game['players'][uid]['name']
     req_elim = game['required_eliminations']
     
-    msg_channel = f"🎡 دارت عجلة القدر وتوقفت عند: ✨ {player_name} ✨\n🔥 مطلوب منه استبعاد {req_elim} من اللاعبين خلال 60 ثانية!"
+    msg_channel = f"🎡 دارت عجلة الحظ وتوقفت عند: ⭐️ {player_name} ⭐️\n🔥 مطلوب منه استبعاد {req_elim} من اللاعبين خلال 60 ثانية!"
     await safe_send(context, chat_id=database[admin_id]["channel_id"], text=msg_channel)
     await safe_send(context, chat_id=admin_id, text=f"✅ تم الإعلان في القناة: بدأ دور {player_name} ومطلوب منه {req_elim} استبعادات.")
 
@@ -182,6 +186,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for aid, data in database.items():
         if isinstance(aid, (int, str)) and data.get("game"):
             if user_id in data["game"]["waiting_for_name"]:
+                
+                # --- التعديل: منع اللاعبين المتربصين من الدخول بعد بدء اللعبة ---
+                if data["game"].get("is_game_started") or not data["game"].get("is_registration_open"):
+                    data["game"]["waiting_for_name"].remove(user_id)
+                    await update.message.reply_text("⚠️ مع الأسف، لقد تأخرت! تم إغلاق بوابات الساحة وبدأت الملحمة بالفعل.")
+                    return
+                # ----------------------------------------------------------------
+
                 if len(text) > 40:
                     await update.message.reply_text("⚠️ عذراً، الاسم طويل جداً! (أقصى حد هو 40 حرف).\nرجاءً أرسل اسماً أقصر لتدخل الساحة:")
                     return
@@ -195,7 +207,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 channel_chat = database[aid].get("channel_id")
                 msg_id = data["game"].get("counter_msg_id")
                 
-                # التعديل الجديد: تحديث العداد كل 5 لاعبين فقط لتخفيف الضغط على البوت وتجنب حظر تليجرام
                 if channel_chat and msg_id and count % 5 == 0:
                     await safe_edit(context, chat_id=channel_chat, message_id=msg_id, text=f"👥 عدد المشتركين الحالي: {count}")
                 return
@@ -293,9 +304,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game = database[admin_key].get("game")
             if not game or not game.get("is_game_started"): await update.message.reply_text("⚠️ لا توجد معركة جارية حالياً."); return
             if game.get("current_turn") is not None: await update.message.reply_text("⏳ مهلاً! هناك دور جارٍ بالفعل للاعب آخر."); return
+            
+            # --- التعديل: قفل الروليت لمنع السبام ---
+            if game.get("waiting_for_roulette"): 
+                await update.message.reply_text("⏳ لقد ضغطت على الروليت بالفعل! الرجاء اختيار عدد المستبعدين من القائمة السابقة."); return
+            # ----------------------------------------
+            
             max_el = len(game["players"]) - 1
             kb = [[InlineKeyboardButton(str(i), callback_data=f"set_{admin_key}_{i}") for i in range(1, min(max_el, 5) + 1)]]
+            
+            game["waiting_for_roulette"] = True # تفعيل القفل
+            
             await update.message.reply_text(f"🎯 حدد عدد الضحايا (الاستبعادات) لهذه الجولة:", reply_markup=InlineKeyboardMarkup(kb)); return
+        
         elif "ربط القناة" in text:
             await update.message.reply_text("📡 قم بتوجيه (Forward) أي رسالة من قناتك إلى هنا لربطها فوراً."); return
 
@@ -352,6 +373,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "set":
         num = int(parts[2]); game["required_eliminations"] = num
+        
+        game["waiting_for_roulette"] = False # فتح قفل الروليت بعد الاختيار
+        
         try: await query.delete_message()
         except: pass
         await start_turn(admin_id, context)
@@ -373,6 +397,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if game["current_eliminations"] < game["required_eliminations"]:
                     await send_player_menu(admin_id, update.effective_user.id, context) 
                 else: 
+                    # --- التعديل: إيقاف عداد الوقت فوراً لضمان عدم الطرد بالخطأ ---
+                    try:
+                        if game.get("turn_timer_task") and not game["turn_timer_task"].done():
+                            game["turn_timer_task"].cancel()
+                    except Exception: pass
+                    # -------------------------------------------------------------
+                    
                     game["current_turn"] = None
                     try: await query.edit_message_text("✅ تمت المهمة بنجاح! لقد استبعدت العدد المطلوب.")
                     except: pass
@@ -432,7 +463,6 @@ async def start_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
     current_username = f"@{u_name.lower()}" if u_name else None
     
     if c.args and c.args[0].startswith("reg"):
-        # التعديل الإضافي: حماية ضد ثغرة "الرابط القاتل" حتى لا يتوقف البوت أبداً
         try:
             channel_id_part = int(c.args[0][3:])
             aid = channel_to_admin.get(channel_id_part)
@@ -461,3 +491,4 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     app.run_polling()
+
