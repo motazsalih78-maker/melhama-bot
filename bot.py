@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# إعداد السجلات (Log) لمعرفة الأخطاء فوراً
+# إعداد السجلات
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- 1. الإعدادات وقواعد البيانات ---
@@ -21,35 +21,37 @@ def get_empty_game():
         "turn_timer_task": None, "required_eliminations": 0, "current_eliminations": 0,
         "timer_msg_id": None, 
         "counter_msg_id": None,
-        "waiting_for_roulette": False # قفل الروليت لمنع التكرار
+        "waiting_for_roulette": False,
+        "last_turn": None 
     }
 
-# --- 2. نظام الإلحاح التصاعدي (تم التحديث لـ 4 محاولات ووقت تصاعدي) ---
+# --- 2. نظام الإلحاح التصاعدي ---
 async def safe_send(context, chat_id, text, reply_markup=None):
-    for attempt in range(4): # 4 محاولات بدلاً من 3
+    for attempt in range(4): 
         try:
             return await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
         except Exception as e:
-            if attempt == 3: return None # إذا فشل في الرابعة يتجاهل
-            await asyncio.sleep(attempt + 1) # انتظار تصاعدي: 1ث، 2ث، 3ث
+            if attempt == 3: return None 
+            await asyncio.sleep(attempt + 1) 
 
 async def safe_edit(context, chat_id, message_id, text, reply_markup=None):
-    for attempt in range(4): # 4 محاولات بدلاً من 3
+    for attempt in range(4): 
         try:
             return await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
         except BadRequest as e:
-            if "not modified" in str(e).lower(): break # تجاهل إذا كان النص لم يتغير
+            if "not modified" in str(e).lower(): break 
             if attempt == 3: return None
-            await asyncio.sleep(attempt + 1) # انتظار تصاعدي: 1ث، 2ث، 3ث
+            await asyncio.sleep(attempt + 1) 
         except Exception:
             if attempt == 3: return None
-            await asyncio.sleep(attempt + 1) # انتظار تصاعدي: 1ث، 2ث، 3ث
+            await asyncio.sleep(attempt + 1) 
 
 # --- 3. لوحات التحكم ---
 def get_owner_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("➕ إضافة مشرف"), KeyboardButton("➖ إزالة مشرف")],
         [KeyboardButton("📋 قائمة المشرفين"), KeyboardButton("📡 ربط القناة")],
+        [KeyboardButton("📊 حالة النظام"), KeyboardButton("📨 رسالة للمشرفين")], # تم استرجاع الزرين هنا!
         [KeyboardButton("🎮 واجهة المشرف")]
     ], resize_keyboard=True)
 
@@ -67,20 +69,14 @@ async def turn_timer_logic(admin_id, player_id, context):
     game = database[admin_id].get("game")
     channel_id = database[admin_id].get("channel_id")
     
-    await safe_send(context, chat_id=channel_id, text="⏳ حان وقت التنفيذ! لديك 60 ثانية لإنجاز المهمة وإلا سيتم إقصاؤك.")
-
     for _ in range(60):
         await asyncio.sleep(1)
         if not game or not game.get("is_game_started") or game.get("current_turn") != player_id:
             return 
     
-    # منطقة الصفر (انتهت الـ 60 ثانية)
     if game and game.get("current_turn") == player_id:
-        
-        # --- التعديل: الأولوية لعمل اللاعب في آخر جزء من الثانية ---
         if game.get("current_eliminations", 0) >= game.get("required_eliminations", 1):
-            return # اللاعب أتم المهمة في الوقت الضائع، يتم إلغاء الطرد!
-        # -------------------------------------------------------------
+            return 
 
         game["current_turn"] = None
 
@@ -138,7 +134,16 @@ async def send_admin_summary(admin_id, context):
 async def start_turn(admin_id, context):
     game = database[admin_id].get("game")
     if not game: return
-    uid = random.choice(list(game["players"].keys()))
+    
+    available_players = list(game["players"].keys())
+    last_turn_player = game.get("last_turn")
+    
+    if last_turn_player in available_players and len(available_players) > 2:
+        available_players.remove(last_turn_player)
+        
+    uid = random.choice(available_players)
+    game["last_turn"] = uid 
+    
     game["current_turn"], game["current_eliminations"] = uid, 0
     
     player_name = game['players'][uid]['name']
@@ -182,17 +187,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     real_name = update.effective_user.first_name 
     display_user = current_username if current_username else real_name 
 
-    # 1. أولوية تسجيل الأسماء مع فحص الطول (حارس الأسماء)
     for aid, data in database.items():
         if isinstance(aid, (int, str)) and data.get("game"):
             if user_id in data["game"]["waiting_for_name"]:
                 
-                # --- التعديل: منع اللاعبين المتربصين من الدخول بعد بدء اللعبة ---
                 if data["game"].get("is_game_started") or not data["game"].get("is_registration_open"):
-                    data["game"]["waiting_for_name"].remove(user_id)
+                    data["game"]["waiting_for_name"].discard(user_id)
                     await update.message.reply_text("⚠️ مع الأسف، لقد تأخرت! تم إغلاق بوابات الساحة وبدأت الملحمة بالفعل.")
                     return
-                # ----------------------------------------------------------------
+
+                if len(data["game"]["players"]) >= 30:
+                    data["game"]["waiting_for_name"].discard(user_id)
+                    await update.message.reply_text("⚠️ مع الأسف، اكتمل العدد الأقصى للعبة (30 لاعب). حظاً أوفر في المرة القادمة!")
+                    return
 
                 if len(text) > 40:
                     await update.message.reply_text("⚠️ عذراً، الاسم طويل جداً! (أقصى حد هو 40 حرف).\nرجاءً أرسل اسماً أقصر لتدخل الساحة:")
@@ -200,7 +207,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 data["game"]["players"][user_id] = {"name": text, "user": display_user, "has_reveal": True}
                 global_active_players[user_id] = aid 
-                data["game"]["waiting_for_name"].remove(user_id)
+                data["game"]["waiting_for_name"].discard(user_id)
                 await update.message.reply_text(f"✅ تم تسجيل دخولك لساحة المعركة باسم: {text}\nانتظر بدء الملحمة!")
                 
                 count = len(data["game"]["players"])
@@ -208,7 +215,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg_id = data["game"].get("counter_msg_id")
                 
                 if channel_chat and msg_id and count % 5 == 0:
-                    await safe_edit(context, chat_id=channel_chat, message_id=msg_id, text=f"👥 عدد المشتركين الحالي: {count}")
+                    await safe_edit(context, chat_id=channel_chat, message_id=msg_id, text=f"👥 عدد المشتركين الحالي: {count} / 30")
                 return
 
     admin_key = None
@@ -247,6 +254,26 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("📋 لا يوجد أي مشرفين مضافين حالياً.")
             return
 
+        # --- الأزرار المسترجعة هنا ---
+        elif "حالة النظام" in text and is_owner:
+            active_games = sum(1 for data in database.values() if data.get("game") and data["game"].get("is_game_started"))
+            total_admins = len([k for k in database.keys() if k != OWNER_ID])
+            total_players = len(global_active_players)
+            
+            status_text = (
+                f"📊 **حالة النظام الحالية:**\n\n"
+                f"🛡️ عدد المشرفين المسجلين: {total_admins}\n"
+                f"⚔️ المعارك الجارية الآن: {active_games}\n"
+                f"👥 إجمالي اللاعبين النشطين: {total_players}\n\n"
+                f"✅ البوت يعمل بكفاءة ومستقر."
+            )
+            await update.message.reply_text(status_text); return
+            
+        elif "رسالة للمشرفين" in text and is_owner:
+            await update.message.reply_text("📨 أرسل الرسالة التي تود تعميمها على جميع المشرفين الآن:")
+            context.user_data["action"] = "broadcast_admins"; return
+        # -----------------------------
+
         elif "فتح باب التسجيل" in text:
             existing_game = database[admin_key].get("game")
             if existing_game and (existing_game.get("is_game_started") or existing_game.get("is_registration_open")):
@@ -259,10 +286,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             database[admin_key]["game"]["is_registration_open"] = True
             
             link = f"https://t.me/{(await context.bot.get_me()).username}?start=reg{c_id}"
-            await safe_send(context, chat_id=c_id, text=f"✨ بوابات الساحة فُتحت! للتسجيل اضغط على الرابط:\n🔗 {link}")
+            await safe_send(context, chat_id=c_id, text=f"⭐️ بوابات الساحة فُتحت! للتسجيل اضغط على الرابط:\n🔗 {link}")
             await update.message.reply_text("📣 تم الإعلان في القناة وفتح باب التسجيل بنجاح.")
             
-            counter_msg = await safe_send(context, chat_id=c_id, text="👥 عدد المشتركين الحالي: 0")
+            counter_msg = await safe_send(context, chat_id=c_id, text="👥 عدد المشتركين الحالي: 0 / 30")
             if counter_msg: database[admin_key]["game"]["counter_msg_id"] = counter_msg.message_id
             return
             
@@ -305,22 +332,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not game or not game.get("is_game_started"): await update.message.reply_text("⚠️ لا توجد معركة جارية حالياً."); return
             if game.get("current_turn") is not None: await update.message.reply_text("⏳ مهلاً! هناك دور جارٍ بالفعل للاعب آخر."); return
             
-            # --- التعديل: قفل الروليت لمنع السبام ---
             if game.get("waiting_for_roulette"): 
                 await update.message.reply_text("⏳ لقد ضغطت على الروليت بالفعل! الرجاء اختيار عدد المستبعدين من القائمة السابقة."); return
-            # ----------------------------------------
             
             max_el = len(game["players"]) - 1
             kb = [[InlineKeyboardButton(str(i), callback_data=f"set_{admin_key}_{i}") for i in range(1, min(max_el, 5) + 1)]]
             
-            game["waiting_for_roulette"] = True # تفعيل القفل
+            game["waiting_for_roulette"] = True 
             
             await update.message.reply_text(f"🎯 حدد عدد الضحايا (الاستبعادات) لهذه الجولة:", reply_markup=InlineKeyboardMarkup(kb)); return
         
         elif "ربط القناة" in text:
             await update.message.reply_text("📡 قم بتوجيه (Forward) أي رسالة من قناتك إلى هنا لربطها فوراً."); return
 
-    # --- الإضافة الجماعية للمشرفين ---
     if is_owner and context.user_data.get("action") == "add_admin":
         usernames = re.split(r'[\s,\n]+', text.strip()) 
         added_list = []
@@ -343,6 +367,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keys = [k for k, v in database.items() if v.get("username") == target]
         for k in keys: del database[k]
         await update.message.reply_text(f"✅ تم تجريد {target} من صلاحياته."); context.user_data["action"] = None; return
+
+    # --- دالة إرسال الإذاعة للمشرفين ---
+    elif is_owner and context.user_data.get("action") == "broadcast_admins":
+        admin_ids = [k for k in database.keys() if k != OWNER_ID and isinstance(k, int)]
+        sent_count = 0
+        for a_id in admin_ids:
+            try:
+                await context.bot.send_message(chat_id=a_id, text=f"🔔 **تعميم إداري من المالك:**\n\n{text}")
+                sent_count += 1
+            except Exception: pass
+        await update.message.reply_text(f"✅ تم إرسال رسالتك بنجاح إلى {sent_count} مشرف.")
+        context.user_data["action"] = None; return
+    # ----------------------------------
 
     if update.message.forward_origin and is_admin:
         origin = update.message.forward_origin
@@ -374,7 +411,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "set":
         num = int(parts[2]); game["required_eliminations"] = num
         
-        game["waiting_for_roulette"] = False # فتح قفل الروليت بعد الاختيار
+        game["waiting_for_roulette"] = False 
         
         try: await query.delete_message()
         except: pass
@@ -397,12 +434,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if game["current_eliminations"] < game["required_eliminations"]:
                     await send_player_menu(admin_id, update.effective_user.id, context) 
                 else: 
-                    # --- التعديل: إيقاف عداد الوقت فوراً لضمان عدم الطرد بالخطأ ---
                     try:
                         if game.get("turn_timer_task") and not game["turn_timer_task"].done():
                             game["turn_timer_task"].cancel()
                     except Exception: pass
-                    # -------------------------------------------------------------
                     
                     game["current_turn"] = None
                     try: await query.edit_message_text("✅ تمت المهمة بنجاح! لقد استبعدت العدد المطلوب.")
@@ -470,9 +505,17 @@ async def start_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
             await u.message.reply_text("⚠️ عذراً، هذا الرابط غير صالح.")
             return
 
-        if aid and database[aid].get("game") and database[aid]["game"].get("is_registration_open"):
-            if uid in database[aid]["game"]["players"] or uid in database[aid]["game"]["waiting_for_name"]:
-                await u.message.reply_text("⚠️ مهلاً! لا يمكنك دخول نفس اللعبة مرتين."); return
+        if aid and database[aid].get("game"):
+            if not database[aid]["game"].get("is_registration_open") or database[aid]["game"].get("is_game_started"):
+                await u.message.reply_text("⚠️ مع الأسف، لقد تأخرت! تم إغلاق بوابات الساحة وبدأت الملحمة بالفعل.")
+                return
+            
+            if len(database[aid]["game"]["players"]) >= 30:
+                await u.message.reply_text("⚠️ مع الأسف، اكتمل العدد الأقصى للعبة (30 لاعب). حظاً أوفر في المرة القادمة!")
+                return
+
+            if uid in database[aid]["game"]["players"]:
+                await u.message.reply_text("⚠️ مهلاً! أنت مسجل بالفعل في هذه اللعبة."); return
             if uid in global_active_players:
                 await u.message.reply_text("⚠️ أنت مسجل بالفعل في معركة أخرى جارية!"); return
             
