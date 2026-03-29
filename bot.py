@@ -1,4 +1,4 @@
-import asyncio, random, logging, re
+import asyncio, random, logging, re, json, os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -13,6 +13,48 @@ OWNER_ID = 7083077757
 database = { OWNER_ID: {"username": "@owner", "channel_id": None, "game": None} }
 channel_to_admin = {} 
 global_active_players = {} 
+
+# --- 1.5 نظام الذاكرة الدائمة (JSON) ---
+DB_FILE = "bot_database.json"
+
+def save_data():
+    data_to_save = {}
+    for k, v in database.items():
+        # نحفظ فقط البيانات الدائمة (اليوزر والقناة) ونتجاهل اللعبة المؤقتة
+        data_to_save[str(k)] = {
+            "username": v.get("username"),
+            "channel_id": v.get("channel_id")
+        }
+    try:
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data_to_save, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Error saving DB: {e}")
+
+def load_data():
+    global database, channel_to_admin
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                saved_data = json.load(f)
+            for k, v in saved_data.items():
+                # تحويل المفتاح إلى رقم إذا كان ID
+                key = int(k) if k.lstrip('-').isdigit() else k
+                if key not in database:
+                    database[key] = {"username": v.get("username"), "channel_id": v.get("channel_id"), "game": None}
+                else:
+                    database[key]["username"] = v.get("username")
+                    database[key]["channel_id"] = v.get("channel_id")
+                
+                c_id = v.get("channel_id")
+                if c_id:
+                    channel_to_admin[c_id] = key
+        except Exception as e:
+            logging.error(f"Error loading DB: {e}")
+
+# استدعاء البيانات المحفوظة عند التشغيل
+load_data()
+# --------------------------------------
 
 def get_empty_game():
     return {
@@ -51,7 +93,7 @@ def get_owner_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("➕ إضافة مشرف"), KeyboardButton("➖ إزالة مشرف")],
         [KeyboardButton("📋 قائمة المشرفين"), KeyboardButton("📡 ربط القناة")],
-        [KeyboardButton("📊 حالة النظام"), KeyboardButton("📨 رسالة للمشرفين")], # تم استرجاع الزرين هنا!
+        [KeyboardButton("📊 حالة النظام"), KeyboardButton("📨 رسالة للمشرفين")],
         [KeyboardButton("🎮 واجهة المشرف")]
     ], resize_keyboard=True)
 
@@ -229,6 +271,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     database[user_id]["username"] = current_username
                     for c_id, a_id in channel_to_admin.items():
                         if a_id == key: channel_to_admin[c_id] = user_id
+                    save_data() # حفظ بعد تحويل اليوزر إلى ID
                 admin_key = user_id
                 break
                 
@@ -254,7 +297,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("📋 لا يوجد أي مشرفين مضافين حالياً.")
             return
 
-        # --- الأزرار المسترجعة هنا ---
         elif "حالة النظام" in text and is_owner:
             active_games = sum(1 for data in database.values() if data.get("game") and data["game"].get("is_game_started"))
             total_admins = len([k for k in database.keys() if k != OWNER_ID])
@@ -272,7 +314,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif "رسالة للمشرفين" in text and is_owner:
             await update.message.reply_text("📨 أرسل الرسالة التي تود تعميمها على جميع المشرفين الآن:")
             context.user_data["action"] = "broadcast_admins"; return
-        # -----------------------------
 
         elif "فتح باب التسجيل" in text:
             existing_game = database[admin_key].get("game")
@@ -356,6 +397,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added_list.append(target)
             
         if added_list:
+            save_data() # حفظ بعد إضافة المشرفين
             await update.message.reply_text("✅ تمت ترقية المشرفين بنجاح:\n" + "\n".join(added_list))
         else:
             await update.message.reply_text("⚠️ لم يتم العثور على يوزرات صحيحة في رسالتك.")
@@ -366,9 +408,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not target.startswith("@"): target = "@" + target
         keys = [k for k, v in database.items() if v.get("username") == target]
         for k in keys: del database[k]
+        if keys: save_data() # حفظ بعد الحذف
         await update.message.reply_text(f"✅ تم تجريد {target} من صلاحياته."); context.user_data["action"] = None; return
 
-    # --- دالة إرسال الإذاعة للمشرفين ---
     elif is_owner and context.user_data.get("action") == "broadcast_admins":
         admin_ids = [k for k in database.keys() if k != OWNER_ID and isinstance(k, int)]
         sent_count = 0
@@ -379,7 +421,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception: pass
         await update.message.reply_text(f"✅ تم إرسال رسالتك بنجاح إلى {sent_count} مشرف.")
         context.user_data["action"] = None; return
-    # ----------------------------------
 
     if update.message.forward_origin and is_admin:
         origin = update.message.forward_origin
@@ -387,6 +428,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hasattr(c_chat, 'id'):
             c_id = c_chat.id
             database[admin_key]["channel_id"], channel_to_admin[c_id] = c_id, admin_key
+            save_data() # حفظ بعد ربط القناة
             await update.message.reply_text(f"📡 تم الربط بنجاح مع القناة ذات المعرف: {c_id}")
 
     if not is_admin and update.message.chat.type == 'private':
@@ -534,4 +576,3 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     app.run_polling()
-
