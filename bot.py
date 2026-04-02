@@ -21,7 +21,7 @@ def get_empty_game():
         "turn_timer_task": None, "required_eliminations": 0, "current_eliminations": 0,
         "timer_msg_id": None, 
         "counter_msg_id": None,
-        "counter_task": None, # تم إضافة مهمة العداد هنا
+        "counter_task": None, 
         "waiting_for_roulette": False,
         "last_turn": None 
     }
@@ -52,7 +52,7 @@ def get_owner_keyboard():
     return ReplyKeyboardMarkup([
         [KeyboardButton("➕ إضافة مشرف"), KeyboardButton("➖ إزالة مشرف")],
         [KeyboardButton("📋 قائمة المشرفين")],
-        [KeyboardButton("📡 ربط القناة"), KeyboardButton("❌ الغاء ربط القناة")], # الإضافة 1
+        [KeyboardButton("📡 ربط القناة"), KeyboardButton("❌ الغاء ربط القناة")], 
         [KeyboardButton("📊 حالة النظام"), KeyboardButton("📨 رسالة للمشرفين")], 
         [KeyboardButton("🎮 واجهة المشرف")]
     ], resize_keyboard=True)
@@ -61,17 +61,16 @@ def get_admin_keyboard(is_owner=False):
     buttons = [
         [KeyboardButton("🔓 فتح باب التسجيل"), KeyboardButton("🚀 ابدأ الملحمة")],
         [KeyboardButton("🎡 تدوير الروليت"), KeyboardButton("⏹️ إيقاف اللعبة")],
-        [KeyboardButton("📡 ربط القناة"), KeyboardButton("❌ الغاء ربط القناة")] # الإضافة 1
+        [KeyboardButton("📡 ربط القناة"), KeyboardButton("❌ الغاء ربط القناة")] 
     ]
     if is_owner: buttons.append([KeyboardButton("🔙 العودة للمالك")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 # --- 4. محرك اللعبة والعدادات ---
-# الإضافة 3: عداد المشتركين الذي يعمل كل دقيقة
 async def registration_counter_logic(admin_id, context):
     game = database[admin_id].get("game")
     while game and game.get("is_registration_open"):
-        await asyncio.sleep(60) # ينتظر دقيقة كاملة
+        await asyncio.sleep(60) 
         game = database[admin_id].get("game")
         if not game or not game.get("is_registration_open"):
             break
@@ -122,7 +121,7 @@ async def check_winner(admin_id, context):
                 task.cancel()
         except Exception: pass
 
-        if game.get("counter_task"): # إيقاف مهمة العداد
+        if game.get("counter_task"): 
             try: game["counter_task"].cancel()
             except Exception: pass
         
@@ -231,8 +230,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 global_active_players[user_id] = aid 
                 data["game"]["waiting_for_name"].discard(user_id)
                 await update.message.reply_text(f"✅ تم تسجيل دخولك لساحة المعركة باسم: {text}\nانتظر بدء الملحمة!")
-                
-                # الإضافة 3: تم مسح التحديث الفوري هنا والاعتماد على العداد الزمني (دقيقة بدقيقة)
                 return
 
     admin_key = None
@@ -252,17 +249,25 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = admin_key is not None
     is_owner = (user_id == OWNER_ID)
 
+    # --- استخراج الكلمة الأولى فقط لفهم الأوامر بدقة ---
+    first_word = ""
+    if text:
+        # إزالة الإيموجي والرموز واستخراج الكلمة الأولى الصافية
+        clean_text = re.sub(r'[^\w\s]', '', text).strip()
+        if clean_text:
+            first_word = clean_text.split()[0]
+
     if is_admin:
-        if "واجهة" in text:
+        if first_word == "واجهة":
             await update.message.reply_text("🕹️ واجهة التحكم جاهزة بين يديك:", reply_markup=get_admin_keyboard(is_owner)); return
-        elif "العودة للمالك" in text:
+        elif first_word == "العودة":
             await update.message.reply_text("🔙 أهلاً بك في القيادة العليا (واجهة المالك):", reply_markup=get_owner_keyboard()); return
-        elif "إضافة مشرف" in text and is_owner:
+        elif first_word in ["إضافة", "اضافة"] and is_owner:
             await update.message.reply_text("➕ أرسل يوزرات المشرفين الجدد (يمكنك إرسال أكثر من يوزر في رسالة واحدة):"); context.user_data["action"] = "add_admin"; return
-        elif "إزالة مشرف" in text and is_owner:
+        elif first_word in ["إزالة", "ازالة"] and is_owner:
             await update.message.reply_text("➖ أرسل يوزر المشرف لطرده من الإدارة:"); context.user_data["action"] = "rem_admin"; return
         
-        elif "قائمة المشرفين" in text and is_owner:
+        elif first_word == "قائمة" and is_owner:
             admin_list = [v.get('username') for k, v in database.items() if k != OWNER_ID and v.get('username')]
             if admin_list:
                 text_msg = "📋 قائمة المشرفين المعينين حالياً:\n\n" + "\n".join([f"🔹 {username}" for username in admin_list])
@@ -271,7 +276,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("📋 لا يوجد أي مشرفين مضافين حالياً.")
             return
 
-        elif "حالة النظام" in text and is_owner:
+        elif first_word == "حالة" and is_owner:
             active_games = sum(1 for data in database.values() if data.get("game") and data["game"].get("is_game_started"))
             total_admins = len([k for k in database.keys() if k != OWNER_ID])
             total_players = len(global_active_players)
@@ -285,11 +290,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(status_text); return
             
-        elif "رسالة للمشرفين" in text and is_owner:
+        elif first_word == "رسالة" and is_owner:
             await update.message.reply_text("📨 أرسل الرسالة التي تود تعميمها على جميع المشرفين الآن:")
             context.user_data["action"] = "broadcast_admins"; return
 
-        elif "فتح باب التسجيل" in text:
+        elif first_word == "فتح":
             existing_game = database[admin_key].get("game")
             if existing_game and (existing_game.get("is_game_started") or existing_game.get("is_registration_open")):
                 await update.message.reply_text("🚫 لا يمكنك فتح باب التسجيل الآن! هناك تسجيل مفتوح بالفعل أو معركة جارية."); return
@@ -307,11 +312,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             counter_msg = await safe_send(context, chat_id=c_id, text="👥 عدد المشتركين الحالي: 0 / 30")
             if counter_msg: 
                 database[admin_key]["game"]["counter_msg_id"] = counter_msg.message_id
-                # تشغيل مهمة التحديث كل دقيقة
                 database[admin_key]["game"]["counter_task"] = asyncio.create_task(registration_counter_logic(admin_key, context))
             return
             
-        elif "ابدأ الملحمة" in text:
+        elif first_word in ["ابدأ", "ابدا"]:
             game = database[admin_key].get("game")
             if not game or not game.get("players"):
                 await update.message.reply_text("⚠️ المعركة لم تبدأ بعد، أو لا يوجد لاعبين مسجلين."); return
@@ -319,7 +323,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚠️ المعركة جارية بالفعل! لا يمكنك بدءها مرة أخرى."); return
                 
             if len(game["players"]) >= 2:
-                if game.get("counter_task"): # إيقاف مهمة العداد عند بدء اللعبة
+                if game.get("counter_task"): 
                     try: game["counter_task"].cancel()
                     except Exception: pass
                     
@@ -329,7 +333,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await send_admin_summary(admin_key, context)
             else: await update.message.reply_text("⚠️ نحتاج إلى لاعبين اثنين على الأقل لبدء المعركة."); return
             
-        elif "إيقاف اللعبة" in text:
+        elif first_word in ["إيقاف", "ايقاف"]:
             game = database[admin_key].get("game")
             if not game or (not game.get("is_game_started") and not game.get("is_registration_open")):
                 await update.message.reply_text("⚠️ اللعبة منتهية أو لا توجد معركة جارية حالياً لإيقافها."); return
@@ -338,7 +342,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try: game["turn_timer_task"].cancel()
                 except Exception: pass
             
-            if game.get("counter_task"): # إيقاف مهمة العداد
+            if game.get("counter_task"): 
                 try: game["counter_task"].cancel()
                 except Exception: pass
                 
@@ -353,7 +357,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ تم إيقاف اللعبة، وإشعار جميع المسجلين، وتصفية الساحة بنجاح.")
             return
 
-        elif "تدوير الروليت" in text:
+        elif first_word == "تدوير":
             game = database[admin_key].get("game")
             if not game or not game.get("is_game_started"): await update.message.reply_text("⚠️ لا توجد معركة جارية حالياً."); return
             if game.get("current_turn") is not None: await update.message.reply_text("⏳ مهلاً! هناك دور جارٍ بالفعل للاعب آخر."); return
@@ -368,8 +372,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(f"🎯 حدد عدد الضحايا (الاستبعادات) لهذه الجولة:", reply_markup=InlineKeyboardMarkup(kb)); return
         
-        # الإضافة 1: صمامات أمان ربط القناة
-        elif "ربط القناة" in text:
+        elif first_word == "ربط":
             game = database[admin_key].get("game")
             if game and (game.get("is_registration_open") or game.get("is_game_started")):
                 await update.message.reply_text("⚠️ لا يمكنك ربط أو تعديل القناة أثناء وجود تسجيل مفتوح أو لعبة جارية."); return
@@ -377,8 +380,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚠️ هناك قناة مربوطة بالفعل! قم بـ (الغاء ربط القناة) أولاً لتتمكن من إضافة قناة جديدة."); return
             await update.message.reply_text("📡 قم بتوجيه (Forward) أي رسالة من قناتك إلى هنا لربطها فوراً."); return
 
-        # الإضافة 1: زر الغاء ربط القناة وصمامات الأمان
-        elif "الغاء ربط القناة" in text:
+        elif first_word in ["الغاء", "إلغاء"]:
             game = database[admin_key].get("game")
             if game and (game.get("is_registration_open") or game.get("is_game_started")):
                 await update.message.reply_text("⚠️ لا يمكنك الغاء ربط القناة أثناء وجود تسجيل مفتوح أو لعبة جارية."); return
@@ -426,7 +428,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = None; return
 
     if update.message.forward_origin and is_admin:
-        # الإضافة 1: صمام أمان التوجيه لتجنب الأخطاء
         game = database[admin_key].get("game")
         if game and (game.get("is_registration_open") or game.get("is_game_started")):
             await update.message.reply_text("⚠️ لا يمكنك ربط القناة أثناء وجود تسجيل مفتوح أو لعبة جارية."); return
@@ -438,7 +439,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hasattr(c_chat, 'id'):
             c_id = c_chat.id
             database[admin_key]["channel_id"], channel_to_admin[c_id] = c_id, admin_key
-            # الإضافة 4: التذكير برفع البوت مشرف
             await update.message.reply_text(f"📡 تم الربط بنجاح مع القناة ذات المعرف: {c_id}\n\n⚠️ **تذكير هام:** يرجى التأكد من رفع البوت كـ (مشرف/Admin) في القناة التي قمت بربطها الآن لكي يتمكن من إرسال الرسائل وتعديلها بنجاح.")
 
     if not is_admin and update.message.chat.type == 'private':
@@ -519,11 +519,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "kickmenu":
         kbd = [[InlineKeyboardButton(f"❌ طرد: {d['name']}", callback_data=f"kick_{admin_id}_{p}")] for p, d in game.get("players", {}).items()]
-        kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"backsummary_{admin_id}")]) # الإضافة 2: زر الرجوع
+        kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"backsummary_{admin_id}")]) 
         try: await query.edit_message_text("اختر اللاعب المراد طرده من الساحة:", reply_markup=InlineKeyboardMarkup(kbd))
         except: pass
         
-    # الإضافة 2: معالجة زر الرجوع في قائمة الطرد
     elif action == "backsummary":
         try: await query.delete_message()
         except: pass
@@ -538,7 +537,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kick_msg = "🛑 تم إقصاؤك من الساحة بقرار إداري!\n\n💡 اطلب من الادمن بدء اللعبة من جديد او انتظر حتى ينتهي الدور والمشاركة فالرابط مرة اخرى."
             await safe_send(context, chat_id=tid, text=kick_msg)
             
-            try: await query.delete_message() # تم تعديله ليحذف القائمة ويرسل الملخص الجديد مباشرة
+            try: await query.delete_message() 
             except: pass
             await safe_send(context, chat_id=database[admin_id]["channel_id"], text="📜 قرار إداري صارم: تم إقصاء لاعب من الساحة لتجاوز القوانين!")
             
@@ -563,7 +562,6 @@ async def start_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE):
             await u.message.reply_text("⚠️ عذراً، هذا الرابط غير صالح.")
             return
 
-        # الإضافة 5: معالجة الرابط القديم أو الميت أو في حالة عدم وجود لعبة أصلاً
         if not aid or not database[aid].get("game"):
             await u.message.reply_text("الرابط لا يحتوي على لعبة جارية الان ، الرجاء الدخول من رابط لعبة جارية ⚠️")
             return
